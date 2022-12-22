@@ -46,6 +46,10 @@
     </dependency>
     <dependency>
       <groupId>org.apache.camel.quarkus</groupId>
+      <artifactId>camel-quarkus-http</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel.quarkus</groupId>
       <artifactId>camel-quarkus-kotlin</artifactId>
     </dependency>
     <dependency>
@@ -159,7 +163,7 @@
         </dependencies>
         <configuration>
           <javaParameters>true</javaParameters>
-          <jvmTarget>17</jvmTarget>
+          <jvmTarget>11</jvmTarget>
           <compilerPlugins>
             <plugin>all-open</plugin>
           </compilerPlugins>

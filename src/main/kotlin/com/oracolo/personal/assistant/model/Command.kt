@@ -1,9 +1,7 @@
 package com.oracolo.personal.assistant.model
 
-import org.apache.camel.component.telegram.model.IncomingMessageEntity
-
 enum class Command (val code:String){
-    START("/start"), WEBSITE("/website"), CURRICULUM("/cv"), APPOINTMENT("/appointment");
+    START("/start"), WEBSITE("/website"), CURRICULUM("/curriculum"), CALENDAR("/calendar");
 
     companion object {
         fun from(text: String?): Command? {
