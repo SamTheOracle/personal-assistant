@@ -88,14 +88,14 @@ class TelegramIntegration {
 
         from(direct(startCommandRoute))
             .process {
-                val message = (it.`in`.body as IncomingMessage).let { incomingMessage ->
+                it.`in`.body = (it.`in`.body as IncomingMessage).let { incomingMessage ->
                     startMessage.replace(
                         namePlaceholder,
                         incomingMessage.from?.firstName ?: incomingMessage.from?.username ?: defaultName
                     )
                 }
-                textProcessor(message)
             }
+            .log("Headers \${headers} and body \${body}")
             .to(direct(finalRoute))
             .end()
 
