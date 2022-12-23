@@ -105,7 +105,7 @@ class TelegramIntegration {
             .end()
 
         from(direct(curriculumCommandRoute))
-            .to("$telegramBaseUrl/sendDocument?chat_id=$chatId&document=$curriculumUrl")
+            .toD("$telegramBaseUrl/sendDocument?chat_id=\${header.${TelegramConstants.TELEGRAM_CHAT_ID}}&document=$curriculumUrl")
             .end()
 
         from(direct(appointmentCommandRoute))
