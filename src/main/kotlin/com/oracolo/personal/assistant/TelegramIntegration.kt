@@ -63,7 +63,7 @@ class TelegramIntegration {
             ).convertBodyTo(String::class.java)
             .process(updatesProcessor)
             .split(body())
-            .process{
+            .process {
                 it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID]=(it.`in`.body as Update).message.chat.id
             }
             .to(direct(incomingUpdateRoute))
@@ -201,9 +201,9 @@ class TelegramIntegration {
         from(direct(wireTapRoute))
             .setHeader(TelegramConstants.TELEGRAM_CHAT_ID, simple(chatId))
             .process {
-                (it.`in`.body as IncomingMessage).let {
+                it.`in`.body = (it.`in`.body as IncomingMessage).let {
                     OutgoingTextMessage().apply {
-                        text = """${it.from.username} has interest in your bot and wrote:
+                        text = """${it.from?.username ?: it.from?.firstName ?: "Someone"} has interest in your bot and wrote:
                     |${it.text}
                 """.trimMargin()
                     }
