@@ -5,7 +5,7 @@ enum class Command (val code:String){
 
     companion object {
         fun from(text: String?): Command? {
-            return values().firstOrNull { it.code == text || it.name == text }
+            return entries.firstOrNull { it.code == text || it.name == text }
         }
     }
 }
