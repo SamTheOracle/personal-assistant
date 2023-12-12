@@ -3,6 +3,12 @@ package com.oracolo.personal.assistant
 import com.oracolo.personal.assistant.model.Command
 import com.oracolo.personal.assistant.processors.qualifiers.SendUpdatesProcess
 import com.oracolo.personal.assistant.processors.qualifiers.UpdatesProcess
+import io.netty.handler.codec.http.HttpHeaderValues
+import io.quarkus.runtime.Startup
+import jakarta.annotation.PostConstruct
+import jakarta.enterprise.context.ApplicationScoped
+import jakarta.enterprise.inject.Produces
+import jakarta.inject.Inject
 import org.apache.camel.Processor
 import org.apache.camel.RoutesBuilder
 import org.apache.camel.builder.endpoint.StaticEndpointBuilders.*
@@ -10,17 +16,34 @@ import org.apache.camel.component.telegram.TelegramConstants
 import org.apache.camel.component.telegram.model.IncomingMessage
 import org.apache.camel.component.telegram.model.OutgoingTextMessage
 import org.apache.camel.component.telegram.model.Update
+import org.apache.camel.http.common.HttpMethods
 import org.apache.camel.quarkus.kotlin.routes
-import org.apache.http.client.HttpClient
-import org.apache.http.client.config.RequestConfig
-import org.apache.http.impl.client.HttpClientBuilder
+import org.apache.hc.client5.http.classic.HttpClient
+import org.apache.hc.client5.http.config.RequestConfig
+import org.apache.hc.client5.http.entity.mime.MultipartEntityBuilder
+import org.apache.hc.client5.http.impl.classic.HttpClientBuilder
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager
+import org.apache.hc.core5.http.ContentType
+import org.apache.http.HttpHeaders
 import org.eclipse.microprofile.config.inject.ConfigProperty
+import java.io.File
+import java.lang.RuntimeException
 import java.util.concurrent.TimeUnit
-import javax.enterprise.context.ApplicationScoped
-import javax.enterprise.inject.Produces
 
 @ApplicationScoped
+@Startup
 class TelegramIntegration {
+
+    lateinit var fileAsBinary: ByteArray
+
+    @ConfigProperty(name = "personal.assistant.telegram.command.curriculum.url")
+    lateinit var fileUrl: String
+
+    @PostConstruct
+    fun loadFile() {
+        fileAsBinary = javaClass.classLoader.getResourceAsStream(fileUrl)?.readAllBytes()
+            ?: throw RuntimeException("Where is file?")
+    }
 
     @Produces
     fun schedulerRoute(
@@ -54,7 +77,8 @@ class TelegramIntegration {
         ).process(sendUpdatesProcessor)
             .log(
                 "Scheduler in action! Current offset \${header.$offsetHeader}"
-            ).log("Making request to $protocol://$telegramBaseUrl/$updatesCommand?timeout=$timeout&limit=$updatesLimit&offset=\${header.$offsetHeader}")
+            )
+            .log("Making request to $protocol://$telegramBaseUrl/$updatesCommand?timeout=$timeout&limit=$updatesLimit&offset=\${header.$offsetHeader}")
             .toD(
                 http(
                     protocol,
@@ -64,26 +88,28 @@ class TelegramIntegration {
             .process(updatesProcessor)
             .split(body())
             .process {
-                it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID]=(it.`in`.body as Update).message.chat.id
+                it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] = (it.`in`.body as Update).message.chat.id
             }
             .to(direct(incomingUpdateRoute))
             .end()
-        
+
     }
 
     @Produces
     fun httpClient(
         @ConfigProperty(name = "personal.assistant.http.client.maxConnection") maxConnection: Int,
-        @ConfigProperty(name = "personal.assistant.http.client.connectTimeout") connectTimeout: Int,
-        @ConfigProperty(name = "personal.assistant.http.client.socketTimeout") socketTimeout: Int
+        @ConfigProperty(name = "personal.assistant.http.client.connectTimeout") connectTimeout: Long,
+        @ConfigProperty(name = "personal.assistant.http.client.socketTimeout") socketTimeout: Long
     ): HttpClient = HttpClientBuilder.create()
-        .setMaxConnTotal(maxConnection)
+        .setConnectionManager(PoolingHttpClientConnectionManager().apply {
+            maxTotal = maxConnection
+        })
         .disableRedirectHandling()
         .disableAutomaticRetries()
         .setDefaultRequestConfig(
             RequestConfig.custom()
-                .setConnectTimeout(connectTimeout)
-                .setSocketTimeout(socketTimeout)
+                .setConnectionRequestTimeout(connectTimeout, TimeUnit.MILLISECONDS)
+                .setResponseTimeout(socketTimeout, TimeUnit.MILLISECONDS)
                 .build()
         )
         .build()
@@ -112,11 +138,12 @@ class TelegramIntegration {
         @ConfigProperty(name = "personal.assistant.telegram.command.start.message.defaultName") defaultName: String,
         @ConfigProperty(name = "personal.assistant.telegram.command.start.message") startMessage: String,
         @ConfigProperty(name = "personal.assistant.telegram.command.appointment.calendar-url") calendarUrl: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.curriculum.url") curriculumUrl: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.curriculum.fileName") curriculumFileName: String,
         @ConfigProperty(name = "personal.assistant.telegram.incomingUpdateRoute") incomingUpdateRoute: String,
         @ConfigProperty(name = "personal.assistant.telegram.uri") telegramBaseUrl: String,
         @ConfigProperty(name = "personal.assistant.telegram.protocol") protocol: String,
+        @ConfigProperty(name = "personal.assistant.telegram.command.form.keys.document") documentKey: String,
+        @ConfigProperty(name = "personal.assistant.telegram.command.form.keys.chatId") chatIdKey: String,
+        @ConfigProperty(name = "personal.assistant.telegram.command.curriculum.fileName") curriculumName: String,
         httpClient: HttpClient
     ): RoutesBuilder = routes {
 
@@ -131,7 +158,7 @@ class TelegramIntegration {
 
 
         from(
-           direct(incomingUpdateRoute)
+            direct(incomingUpdateRoute)
         ).log("Received \${body}")
             .filter {
                 true == (it.`in`.body as? Update)?.message?.text?.isNotBlank()
@@ -148,9 +175,9 @@ class TelegramIntegration {
                 .`when` { Command.CURRICULUM == Command.from((it.`in`.body as? IncomingMessage)?.text) }
                     .to(direct(curriculumCommandRoute))
                 .`when` { Command.CALENDAR == Command.from((it.`in`.body as? IncomingMessage)?.text) }
-                .to(direct(appointmentCommandRoute))
-            .otherwise()
-                .to(direct(defaultCommandRoute))
+                    .to(direct(appointmentCommandRoute))
+                .otherwise()
+                    .to(direct(defaultCommandRoute))
             .end()
 
         from(direct(websiteCommandRoute))
@@ -180,9 +207,22 @@ class TelegramIntegration {
             .end()
 
         from(direct(curriculumCommandRoute))
-            .toD(http(protocol,"$telegramBaseUrl/sendDocument?chat_id=\${header.${TelegramConstants.TELEGRAM_CHAT_ID}}&document=$curriculumUrl")
-                .advanced()
-                .httpClient(httpClient))
+            .setHeader(HttpHeaders.CONTENT_TYPE, simple("${HttpHeaderValues.MULTIPART_FORM_DATA}"))
+            .setBody {
+                MultipartEntityBuilder.create()
+                    .addBinaryBody(documentKey,fileAsBinary, ContentType.APPLICATION_PDF, curriculumName)
+                    .addTextBody(chatIdKey, chatId)
+                    .build()
+            }
+            .toD(
+                http(
+                    protocol,
+                    "$telegramBaseUrl/sendDocument?chat_id=$chatId"
+                )
+                    .httpMethod(HttpMethods.POST)
+                    .advanced()
+                    .httpClient(httpClient)
+            )
             .end()
 
         from(direct(appointmentCommandRoute))
@@ -203,7 +243,8 @@ class TelegramIntegration {
             .process {
                 it.`in`.body = (it.`in`.body as IncomingMessage).let {
                     OutgoingTextMessage().apply {
-                        text = """${it.from?.username ?: it.from?.firstName ?: "Someone"} has interest in your bot and wrote:
+                        text =
+                            """${it.from?.username ?: it.from?.firstName ?: "Someone"} has interest in your bot and wrote:
                     |${it.text}
                 """.trimMargin()
                     }

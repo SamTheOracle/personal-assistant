@@ -5,8 +5,8 @@ import com.oracolo.personal.assistant.processors.qualifiers.TelegramUpdates
 import org.apache.camel.Exchange
 import org.apache.camel.Processor
 import org.eclipse.microprofile.config.inject.ConfigProperty
-import javax.enterprise.context.Dependent
-import javax.inject.Inject
+import jakarta.enterprise.context.Dependent
+import jakarta.inject.Inject
 
 @Dependent
 @SendUpdatesProcess

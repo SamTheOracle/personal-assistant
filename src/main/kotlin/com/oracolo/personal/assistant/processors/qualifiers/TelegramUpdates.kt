@@ -1,6 +1,6 @@
 package com.oracolo.personal.assistant.processors.qualifiers
 
-import javax.inject.Qualifier
+import jakarta.inject.Qualifier
 
 @Qualifier
 @Retention(AnnotationRetention.RUNTIME)
