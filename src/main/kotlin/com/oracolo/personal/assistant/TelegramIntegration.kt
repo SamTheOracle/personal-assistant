@@ -8,7 +8,7 @@ import io.quarkus.runtime.Startup
 import jakarta.annotation.PostConstruct
 import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.inject.Produces
-import jakarta.inject.Inject
+import jakarta.inject.Singleton
 import org.apache.camel.Processor
 import org.apache.camel.RoutesBuilder
 import org.apache.camel.builder.endpoint.StaticEndpointBuilders.*
@@ -26,11 +26,10 @@ import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager
 import org.apache.hc.core5.http.ContentType
 import org.apache.http.HttpHeaders
 import org.eclipse.microprofile.config.inject.ConfigProperty
-import java.io.File
 import java.lang.RuntimeException
 import java.util.concurrent.TimeUnit
 
-@ApplicationScoped
+@Singleton
 @Startup
 class TelegramIntegration {
 
@@ -118,7 +117,7 @@ class TelegramIntegration {
     @Produces
     fun telegramToTelegram(
         @ConfigProperty(name = "personal.assistant.telegram.bot.token") botToken: String,
-        @ConfigProperty(name = "personal.assistant.telegram.chatId") chatId: String,
+        @ConfigProperty(name = "personal.assistant.telegram.chatId") personalChatId: String,
         @ConfigProperty(name = "personal.assistant.telegram.bot.pollDelay") pollDelay: Long,
         @ConfigProperty(name = "personal.assistant.telegram.bot.timeout") timeout: Int,
         @ConfigProperty(name = "personal.assistant.telegram.bot.updatesLimits") updatesLimit: String,
@@ -211,13 +210,14 @@ class TelegramIntegration {
             .setBody {
                 MultipartEntityBuilder.create()
                     .addBinaryBody(documentKey,fileAsBinary, ContentType.APPLICATION_PDF, curriculumName)
-                    .addTextBody(chatIdKey, chatId)
+                    .addTextBody(chatIdKey, it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] as String)
                     .build()
             }
+            .log("Sending cv to chat id \${header.${TelegramConstants.TELEGRAM_CHAT_ID}} ")
             .toD(
                 http(
                     protocol,
-                    "$telegramBaseUrl/sendDocument?chat_id=$chatId"
+                    "$telegramBaseUrl/sendDocument?chat_id=\${header.${TelegramConstants.TELEGRAM_CHAT_ID}}"
                 )
                     .httpMethod(HttpMethods.POST)
                     .advanced()
@@ -239,21 +239,24 @@ class TelegramIntegration {
 
 
         from(direct(wireTapRoute))
-            .setHeader(TelegramConstants.TELEGRAM_CHAT_ID, simple(chatId))
-            .process {
-                it.`in`.body = (it.`in`.body as IncomingMessage).let {
-                    OutgoingTextMessage().apply {
-                        text =
-                            """${it.from?.username ?: it.from?.firstName ?: "Someone"} has interest in your bot and wrote:
-                    |${it.text}
-                """.trimMargin()
+            .choice()
+                .`when` { personalChatId != (it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] as? String) }
+                    .setHeader(TelegramConstants.TELEGRAM_CHAT_ID, simple(personalChatId))
+                    .process {
+                        it.`in`.body = (it.`in`.body as IncomingMessage).let {
+                            OutgoingTextMessage().apply {
+                                text =
+                                    """${it.from?.username ?: it.from?.firstName ?: "Someone"} has interest in your bot and wrote:
+                            |${it.text}
+                        """.trimMargin()
+                            }
+                        }
                     }
-                }
-            }
-            .to(
-                telegram(telegramComponentType).authorizationToken(botToken)
-                    .chatId(chatId)
-            ).end()
+                    .to(
+                        telegram(telegramComponentType).authorizationToken(botToken)
+                            .chatId(personalChatId)
+                    )
+            .end()
     }
 
     companion object {
