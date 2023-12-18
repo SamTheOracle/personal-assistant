@@ -1,13 +1,18 @@
 package com.oracolo.personal.assistant
 
+import com.oracolo.personal.assistant.config.ExceptionConfig
+import com.oracolo.personal.assistant.config.HttpConfig
+import com.oracolo.personal.assistant.config.RouteConfig
+import com.oracolo.personal.assistant.config.TelegramBotConfig
 import com.oracolo.personal.assistant.model.Command
 import com.oracolo.personal.assistant.processors.qualifiers.SendUpdatesProcess
 import com.oracolo.personal.assistant.processors.qualifiers.UpdatesProcess
+import com.oracolo.personal.assistant.processors.updates.TelegramUpdatesCurrentOffset
 import io.netty.handler.codec.http.HttpHeaderValues
 import io.quarkus.runtime.Startup
 import jakarta.annotation.PostConstruct
-import jakarta.enterprise.context.ApplicationScoped
 import jakarta.enterprise.inject.Produces
+import jakarta.inject.Inject
 import jakarta.inject.Singleton
 import org.apache.camel.Processor
 import org.apache.camel.RoutesBuilder
@@ -33,55 +38,59 @@ import java.util.concurrent.TimeUnit
 @Startup
 class TelegramIntegration {
 
-    lateinit var fileAsBinary: ByteArray
+    private lateinit var fileAsBinary: ByteArray
 
-    @ConfigProperty(name = "personal.assistant.telegram.command.curriculum.url")
-    lateinit var fileUrl: String
 
+    @Inject
+    lateinit var routeConfig: RouteConfig
+    
+    @Inject
+    lateinit var telegramBotConfig: TelegramBotConfig
+    
+    @Inject
+    lateinit var exceptionConfig: ExceptionConfig
+
+    
+    @Inject
+    @UpdatesProcess
+    lateinit var updatesProcessor: Processor
+    
+    @Inject
+    @SendUpdatesProcess
+    lateinit var sendUpdatesProcessor: Processor
+
+    @Inject
+    lateinit var httpConfig: HttpConfig
+    
+    
     @PostConstruct
     fun loadFile() {
-        fileAsBinary = javaClass.classLoader.getResourceAsStream(fileUrl)?.readAllBytes()
+        fileAsBinary = javaClass.classLoader.getResourceAsStream(routeConfig.curriculum().url())?.readAllBytes()
             ?: throw RuntimeException("Where is file?")
     }
 
     @Produces
-    fun schedulerRoute(
-        @ConfigProperty(name = "personal.assistant.scheduler.name") schedulerName: String,
-        @ConfigProperty(name = "personal.assistant.telegram.bot.pollDelay") pollDelay: Long,
-        @ConfigProperty(name = "personal.assistant.telegram.updates.route") updatesRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.uri") telegramBaseUrl: String,
-        @ConfigProperty(name = "personal.assistant.telegram.protocol") protocol: String,
-        @ConfigProperty(name = "personal.assistant.telegram.updatesCommand") updatesCommand: String,
-        @ConfigProperty(name = "personal.assistant.telegram.bot.timeout") timeout: Int,
-        @ConfigProperty(name = "personal.assistant.telegram.bot.updatesLimits") updatesLimit: String,
-        @ConfigProperty(name = "personal.assistant.telegram.incomingUpdateRoute") incomingUpdateRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.offsetHeader") offsetHeader: String,
-        httpClient: HttpClient,
-        @UpdatesProcess
-        updatesProcessor: Processor,
-        @SendUpdatesProcess
-        sendUpdatesProcessor: Processor
-    ) = routes {
+    fun schedulerRoute(httpClient: HttpClient) = routes {
 
         onException(Exception::class.java)
             .log("Received exception during scheduling \${exception}")
             .handled(true)
             .end()
 
+
         from(
-            scheduler(schedulerName)
+            scheduler(routeConfig.scheduler().name())
                 .timeUnit(TimeUnit.SECONDS)
-                .delay(pollDelay)
+                .delay(routeConfig.scheduler().pollDelaySecs())
                 .useFixedDelay(true)
         ).process(sendUpdatesProcessor)
             .log(
-                "Scheduler in action! Current offset \${header.$offsetHeader}"
+                "Scheduler in action! Current offset \${header.${telegramBotConfig.offsetHeaderName()}}"
             )
-            .log("Making request to $protocol://$telegramBaseUrl/$updatesCommand?timeout=$timeout&limit=$updatesLimit&offset=\${header.$offsetHeader}")
             .toD(
                 http(
-                    protocol,
-                    "$telegramBaseUrl/$updatesCommand?timeout=$timeout&limit=$updatesLimit&offset=\${header.$offsetHeader}"
+                    telegramBotConfig.protocol(),
+                    "${telegramBotConfig.getUpdatesUri()}&offset=\${header.${telegramBotConfig.offsetHeaderName()}}"
                 ).advanced().httpClient(httpClient)
             ).convertBodyTo(String::class.java)
             .process(updatesProcessor)
@@ -89,75 +98,42 @@ class TelegramIntegration {
             .process {
                 it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] = (it.`in`.body as Update).message.chat.id
             }
-            .to(direct(incomingUpdateRoute))
+            .to(direct(routeConfig.incomingUpdate().name()))
             .end()
 
     }
 
     @Produces
-    fun httpClient(
-        @ConfigProperty(name = "personal.assistant.http.client.maxConnection") maxConnection: Int,
-        @ConfigProperty(name = "personal.assistant.http.client.connectTimeout") connectTimeout: Long,
-        @ConfigProperty(name = "personal.assistant.http.client.socketTimeout") socketTimeout: Long
-    ): HttpClient = HttpClientBuilder.create()
+    fun httpClient(): HttpClient = HttpClientBuilder.create()
         .setConnectionManager(PoolingHttpClientConnectionManager().apply {
-            maxTotal = maxConnection
+            maxTotal = httpConfig.maxConnection()
         })
         .disableRedirectHandling()
         .disableAutomaticRetries()
         .setDefaultRequestConfig(
             RequestConfig.custom()
-                .setConnectionRequestTimeout(connectTimeout, TimeUnit.MILLISECONDS)
-                .setResponseTimeout(socketTimeout, TimeUnit.MILLISECONDS)
+                .setConnectionRequestTimeout(httpConfig.connectTimeoutMs(), TimeUnit.MILLISECONDS)
+                .setResponseTimeout(httpConfig.socketTimeoutSecs(), TimeUnit.SECONDS)
                 .build()
         )
         .build()
 
 
     @Produces
-    fun telegramToTelegram(
-        @ConfigProperty(name = "personal.assistant.telegram.bot.token") botToken: String,
-        @ConfigProperty(name = "personal.assistant.telegram.chatId") personalChatId: String,
-        @ConfigProperty(name = "personal.assistant.telegram.bot.pollDelay") pollDelay: Long,
-        @ConfigProperty(name = "personal.assistant.telegram.bot.timeout") timeout: Int,
-        @ConfigProperty(name = "personal.assistant.telegram.bot.updatesLimits") updatesLimit: String,
-        @ConfigProperty(name = "personal.assistant.telegram.wireTap") wireTapRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.retry.maxRedeliveries") maxRedeliveries: Int,
-        @ConfigProperty(name = "personal.assistant.telegram.retry.redeliverDelay") redeliverDelay: Long,
-        @ConfigProperty(name = "personal.assistant.telegram.command.website.route") websiteCommandRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.start.route") startCommandRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.default.route") defaultCommandRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.default.message") defaultMessage: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.appointment.route") appointmentCommandRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.curriculum.route") curriculumCommandRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.final.route") finalRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.type") telegramComponentType: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.website.message") websiteCommandMessage: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.start.message.namePlaceholder") namePlaceholder: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.start.message.defaultName") defaultName: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.start.message") startMessage: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.appointment.calendar-url") calendarUrl: String,
-        @ConfigProperty(name = "personal.assistant.telegram.incomingUpdateRoute") incomingUpdateRoute: String,
-        @ConfigProperty(name = "personal.assistant.telegram.uri") telegramBaseUrl: String,
-        @ConfigProperty(name = "personal.assistant.telegram.protocol") protocol: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.form.keys.document") documentKey: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.form.keys.chatId") chatIdKey: String,
-        @ConfigProperty(name = "personal.assistant.telegram.command.curriculum.fileName") curriculumName: String,
-        httpClient: HttpClient
-    ): RoutesBuilder = routes {
+    fun telegramToTelegram(httpClient: HttpClient): RoutesBuilder = routes {
 
         onException(Exception::class.java)
             .log("Exception \${exception}")
-            .maximumRedeliveries(maxRedeliveries)
+            .maximumRedeliveries(exceptionConfig.maxRedeliveries())
             .useExponentialBackOff()
-            .redeliveryDelay(redeliverDelay)
+            .redeliveryDelay(exceptionConfig.redeliverDelayMs())
             .handled(true)
             .log("Body in exception \${body}")
             .end()
 
 
         from(
-            direct(incomingUpdateRoute)
+            direct(routeConfig.incomingUpdate().name())
         ).log("Received \${body}")
             .filter {
                 true == (it.`in`.body as? Update)?.message?.text?.isNotBlank()
@@ -165,59 +141,59 @@ class TelegramIntegration {
             .process {
                 it.`in`.body = (it.`in`.body as Update).message
             }
-            .wireTap(direct(wireTapRoute))
+            .wireTap(direct(routeConfig.wiretap().name()))
             .choice()
                 .`when` { Command.WEBSITE == Command.from((it.`in`.body as? IncomingMessage)?.text) }
-                    .to(direct(websiteCommandRoute))
+                    .to(direct(routeConfig.website().name()))
                 .`when` { Command.START == Command.from((it.`in`.body as? IncomingMessage)?.text) }
-                    .to(direct(startCommandRoute))
+                    .to(direct(routeConfig.start().name()))
                 .`when` { Command.CURRICULUM == Command.from((it.`in`.body as? IncomingMessage)?.text) }
-                    .to(direct(curriculumCommandRoute))
+                    .to(direct(routeConfig.curriculum().name()))
                 .`when` { Command.CALENDAR == Command.from((it.`in`.body as? IncomingMessage)?.text) }
-                    .to(direct(appointmentCommandRoute))
-                .otherwise()
-                    .to(direct(defaultCommandRoute))
+                    .to(direct(routeConfig.calendar().name()))
+            .otherwise()
+                .to(direct(routeConfig.default().name()))
             .end()
 
-        from(direct(websiteCommandRoute))
-            .process(textProcessor(websiteCommandMessage, false))
+        from(direct(routeConfig.website().name()))
+            .process(textProcessor(routeConfig.website().message(), false))
             .toD(
-                telegram(telegramComponentType).authorizationToken(botToken)
+                telegram(telegramBotConfig.type()).authorizationToken(telegramBotConfig.token())
                     .chatId("\${header.${TelegramConstants.TELEGRAM_CHAT_ID}}")
             )
             .end()
 
-        from(direct(startCommandRoute))
+        from(direct(routeConfig.start().name()))
             .process {
                 it.`in`.body = (it.`in`.body as IncomingMessage).let { incomingMessage ->
-                    startMessage.replace(
-                        namePlaceholder,
-                        incomingMessage.from?.firstName ?: incomingMessage.from?.username ?: defaultName
+                    routeConfig.start().message().replace(
+                        routeConfig.start().placeholderName(),
+                        incomingMessage.from?.firstName ?: incomingMessage.from?.username ?: routeConfig.start().defaultName()
                     )
                 }
             }
             .log("Headers \${headers} and body \${body}")
-            .to(direct(finalRoute))
+            .to(direct(routeConfig.final().name()))
             .end()
 
-        from(direct(defaultCommandRoute))
-            .process(textProcessor(defaultMessage))
-            .to(direct(finalRoute))
+        from(direct(routeConfig.default().name()))
+            .process(textProcessor(routeConfig.default().message()))
+            .to(direct(routeConfig.final().name()))
             .end()
 
-        from(direct(curriculumCommandRoute))
+        from(direct(routeConfig.curriculum().name()))
             .setHeader(HttpHeaders.CONTENT_TYPE, simple("${HttpHeaderValues.MULTIPART_FORM_DATA}"))
             .setBody {
                 MultipartEntityBuilder.create()
-                    .addBinaryBody(documentKey,fileAsBinary, ContentType.APPLICATION_PDF, curriculumName)
-                    .addTextBody(chatIdKey, it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] as String)
+                    .addBinaryBody(routeConfig.curriculum().form().documentKey(), fileAsBinary, ContentType.APPLICATION_PDF, routeConfig.curriculum().fileName())
+                    .addTextBody(routeConfig.curriculum().form().chatIdKey(), it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] as String)
                     .build()
             }
             .log("Sending cv to chat id \${header.${TelegramConstants.TELEGRAM_CHAT_ID}} ")
             .toD(
                 http(
-                    protocol,
-                    "$telegramBaseUrl/sendDocument?chat_id=\${header.${TelegramConstants.TELEGRAM_CHAT_ID}}"
+                    telegramBotConfig.protocol(),
+                    "${telegramBotConfig.baseUri()}/sendDocument?chat_id=\${header.${TelegramConstants.TELEGRAM_CHAT_ID}}"
                 )
                     .httpMethod(HttpMethods.POST)
                     .advanced()
@@ -225,37 +201,37 @@ class TelegramIntegration {
             )
             .end()
 
-        from(direct(appointmentCommandRoute))
-            .process(textProcessor(calendarUrl, false))
-            .to(direct(finalRoute))
+        from(direct(routeConfig.calendar().name()))
+            .process(textProcessor(routeConfig.calendar().calendlyUrl(), false))
+            .to(direct(routeConfig.final().name()))
             .end()
 
-        from(direct(finalRoute))
+        from(direct(routeConfig.final().name()))
             .toD(
-                telegram(telegramComponentType).authorizationToken(botToken)
+                telegram(telegramBotConfig.type()).authorizationToken(telegramBotConfig.token())
                     .chatId("\${header.${TelegramConstants.TELEGRAM_CHAT_ID}}")
             )
             .end()
 
 
-        from(direct(wireTapRoute))
+        from(direct(routeConfig.wiretap().name()))
             .choice()
-                .`when` { personalChatId != (it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] as? String) }
-                    .setHeader(TelegramConstants.TELEGRAM_CHAT_ID, simple(personalChatId))
-                    .process {
-                        it.`in`.body = (it.`in`.body as IncomingMessage).let {
-                            OutgoingTextMessage().apply {
-                                text =
-                                    """${it.from?.username ?: it.from?.firstName ?: "Someone"} has interest in your bot and wrote:
+            .`when` { telegramBotConfig.chatId() != (it.`in`.headers[TelegramConstants.TELEGRAM_CHAT_ID] as? String) }
+            .setHeader(TelegramConstants.TELEGRAM_CHAT_ID, simple(telegramBotConfig.chatId()))
+            .process {
+                it.`in`.body = (it.`in`.body as IncomingMessage).let {
+                    OutgoingTextMessage().apply {
+                        text =
+                            """${it.from?.username ?: it.from?.firstName ?: "Someone"} has interest in your bot and wrote:
                             |${it.text}
                         """.trimMargin()
-                            }
-                        }
                     }
-                    .to(
-                        telegram(telegramComponentType).authorizationToken(botToken)
-                            .chatId(personalChatId)
-                    )
+                }
+            }
+            .to(
+                telegram(telegramBotConfig.type()).authorizationToken(telegramBotConfig.token())
+                    .chatId(telegramBotConfig.chatId())
+            )
             .end()
     }
 

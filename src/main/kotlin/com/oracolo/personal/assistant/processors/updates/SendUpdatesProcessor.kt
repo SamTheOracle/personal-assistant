@@ -1,5 +1,6 @@
 package com.oracolo.personal.assistant.processors.updates
 
+import com.oracolo.personal.assistant.config.TelegramBotConfig
 import com.oracolo.personal.assistant.processors.qualifiers.SendUpdatesProcess
 import com.oracolo.personal.assistant.processors.qualifiers.TelegramUpdates
 import org.apache.camel.Exchange
@@ -12,15 +13,15 @@ import jakarta.inject.Inject
 @SendUpdatesProcess
 class SendUpdatesProcessor : Processor {
 
-    @ConfigProperty(name = "personal.assistant.telegram.offsetHeader")
-    lateinit var offsetHeader: String
+    @Inject
+    lateinit var telegramBotConfig: TelegramBotConfig
 
     @Inject
     @TelegramUpdates
     lateinit var telegramUpdatesCurrentOffset: TelegramUpdatesCurrentOffset
 
     override fun process(exchange: Exchange) {
-        exchange.`in`.headers[offsetHeader] =
+        exchange.`in`.headers[telegramBotConfig.offsetHeaderName()] =
             if (telegramUpdatesCurrentOffset.offset() == 0L) 0 else telegramUpdatesCurrentOffset.offset().inc()
     }
 
